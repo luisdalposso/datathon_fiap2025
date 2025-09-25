@@ -1,0 +1,117 @@
+# -------------------------
+# Python / Build / Cache
+# -------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+wheels/
+share/python-wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# PyInstaller
+*.spec
+
+# Logs
+logs/
+*.log
+
+# -------------------------
+# Virtualenv
+# -------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# -------------------------
+# Testes / Cobertura
+# -------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+junit.xml
+
+# -------------------------
+# Ferramentas de qualidade
+# -------------------------
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+.cache/
+
+# -------------------------
+# Jupyter / Notebooks
+# -------------------------
+.ipynb_checkpoints/
+
+# -------------------------
+# IDEs / Editores
+# -------------------------
+.vscode/
+.idea/
+*.code-workspace
+
+# -------------------------
+# Sistema Operacional
+# -------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+desktop.ini
+
+# -------------------------
+# Dotenv / Credenciais locais
+# -------------------------
+.env
+.env.*
+!.env.example
+
+# -------------------------
+# Dados e Artefatos (mantém .gitkeep se quiser versionar a estrutura)
+# -------------------------
+data/raw/**
+!data/raw/.gitkeep
+data/interim/**
+!data/interim/.gitkeep
+data/processed/**
+!data/processed/.gitkeep
+
+models/artifacts/**
+!models/artifacts/.gitkeep
+
+# Relatórios pesados (Evidently, etc.)
+models/reports/**
+!models/reports/.gitkeep
+
+# -------------------------
+# Docker / Containers (opcional)
+# -------------------------
+*.pid
+*.pid.lock
+
+# -------------------------
+# Arquivos temporários do Windows
+# -------------------------
+$RECYCLE.BIN/
+*.tmp
+*.temp
