@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from .schemas import (
@@ -10,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-app = FastAPI(title="Decision Match API", version="0.3.0")
+app = FastAPI(title="Decision Match API", version="0.3.1")
 
 # CORS liberado para dev/local
 app.add_middleware(
@@ -30,7 +31,7 @@ def _score_df(df: pd.DataFrame) -> np.ndarray:
     """Retorna scores [0,1] para um DataFrame no formato da pipeline."""
     if _model is None:
         return np.zeros(len(df), dtype=float)
-    # último estágio
+    df = df.copy().fillna("")
     last = _model[-1]
     if hasattr(last, "predict_proba"):
         s = _model.predict_proba(df)[:, 1]
@@ -90,7 +91,7 @@ def score(payload: ScoreRequest):
         "competencias": [payload.competencias or ""],
         "observacoes": [payload.observacoes or ""],
         "titulo_vaga": [payload.titulo_vaga or ""],
-    })
+    }).fillna("")
     score_val = float(_score_df(Xdf)[0])
     return ScoreResponse(
         score=score_val,
@@ -110,25 +111,27 @@ def score_batch(payload: list[ScoreRequest]):
             "observacoes": p.observacoes or "",
             "titulo_vaga": p.titulo_vaga or "",
         })
-    Xdf = pd.DataFrame(rows)
+    Xdf = pd.DataFrame(rows).fillna("")
     scores = _score_df(Xdf)
+    thr = _threshold_topk
     out = []
     for s in scores:
         s = float(s)
         out.append({
             "score": s,
-            "pass_by_threshold": s >= _threshold_topk,
-            "threshold_used": _threshold_topk,
+            "pass_by_threshold": s >= thr,
+            "threshold_used": thr,
         })
     return out
 
 @app.post("/rank-candidates", response_model=RankResponse)
 def rank_candidates(payload: RankCandidatesRequest):
-    # monta uma linha por candidato, repetindo contexto da vaga
+    # monta uma linha por candidato, repetindo o contexto da vaga
     rows = []
-    ids = []
+    ids, names = [], []
     for c in payload.candidates:
         ids.append(c.id)
+        names.append(c.name)
         rows.append({
             "cv_pt": c.cv_pt or "",
             "principais_atividades": payload.principais_atividades or "",
@@ -137,7 +140,8 @@ def rank_candidates(payload: RankCandidatesRequest):
             "observacoes": " ".join(filter(None, [payload.observacoes or "", c.observacoes or ""])),
             "titulo_vaga": payload.titulo_vaga or "",
         })
-    Xdf = pd.DataFrame(rows)
+
+    Xdf = pd.DataFrame(rows).fillna("")
     scores = _score_df(Xdf)
 
     # ordena por score desc
@@ -146,20 +150,24 @@ def rank_candidates(payload: RankCandidatesRequest):
 
     # aplica threshold (se pedido), depois corta em K
     items_all = []
+    thr = _threshold_topk
+    use_thr = bool(payload.use_threshold)
     for idx in order:
         s = float(scores[idx])
-        pass_thr = s >= _threshold_topk if payload.use_threshold else True
+        pass_thr = s >= thr if use_thr else True
         items_all.append(RankItem(
             id=str(ids[idx]) if ids[idx] is not None else None,
+            name=str(names[idx]) if names[idx] is not None else None,
             score=s,
             pass_by_threshold=pass_thr
         ))
-    if payload.use_threshold:
+
+    if use_thr:
         items_all = [it for it in items_all if it.pass_by_threshold]
 
     items = items_all[:k_target]
     return RankResponse(
         items=items,
         used_k=len(items),
-        threshold_used=_threshold_topk
+        threshold_used=thr
     )

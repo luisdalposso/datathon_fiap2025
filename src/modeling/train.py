@@ -1,6 +1,8 @@
 from __future__ import annotations
 from pathlib import Path
 import json
+import time
+from datetime import datetime
 import joblib
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold, GroupKFold
@@ -19,6 +21,14 @@ from .evaluate import ndcg_at_k, precision_at_k, recall_at_k, mrr
 
 # Alvo de workload por vaga: quantos candidatos o recrutador quer ver no topo
 TARGET_K = 5
+
+def _fmt_secs(seconds: float) -> str:
+    m, s = divmod(seconds, 60.0)
+    h, m = divmod(m, 60.0)
+    return f"{int(h):02d}:{int(m):02d}:{s:06.3f}"
+
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def make_training_table(app_df: pd.DataFrame, job_df: pd.DataFrame, prs_df: pd.DataFrame) -> pd.DataFrame:
     # Join prospects with applicants and jobs
@@ -50,21 +60,32 @@ def make_training_table(app_df: pd.DataFrame, job_df: pd.DataFrame, prs_df: pd.D
 
 
 def main():
+    t0 = time.perf_counter()
+    print(f"[TIMER] Início do treino: { _now() }")
+
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    t_load0 = time.perf_counter()
     app_df = load_applicants(APPLICANTS_PATH)
     job_df = load_jobs(VAGAS_PATH)
+    prs_df = load_prospects(PROSPECTS_PATH)
+    t_load = time.perf_counter() - t_load0
+    print(f"[TIMER] Carregamento de dados: { _fmt_secs(t_load) }")
+
     # sanitize jobs to avoid merge errors
     job_df = job_df[job_df["job_id"].notna() & (job_df["job_id"] != "")]
     job_df = job_df.drop_duplicates("job_id", keep="first")
-    prs_df = load_prospects(PROSPECTS_PATH)
 
     print("jobs total:", len(job_df), "ids únicos:", job_df["job_id"].nunique())
     dups = job_df["job_id"][job_df["job_id"].duplicated()].unique()
     print("duplicatas:", list(dups[:5]))
 
+    t_prep0 = time.perf_counter()
     data = make_training_table(app_df, job_df, prs_df)
+    t_prep = time.perf_counter() - t_prep0
+    print(f"[TIMER] Montagem da tabela de treino: { _fmt_secs(t_prep) } (linhas={len(data)})")
+
     if data.empty:
         raise RuntimeError(
             "Tabela de treino ficou vazia. Verifique a interseção entre prospects/applicants/vagas "
@@ -82,6 +103,7 @@ def main():
     n_splits = 3 if n_groups >= 6 else 2
 
     ndcgs, rocs, f1s = [], [], []
+    kth_scores: list[float] = []
 
     # tenta Estratificado por grupo; se não der, cai para GroupKFold
     splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
@@ -90,8 +112,11 @@ def main():
     except Exception:
         split_iter = GroupKFold(n_splits=n_splits).split(X, y, groups)
 
+    t_cv0 = time.perf_counter()
     valid_folds = 0
     for fold, (tr, va) in enumerate(split_iter):
+        t_fold0 = time.perf_counter()
+
         Xtr, Xva = X.iloc[tr], X.iloc[va]
         ytr, yva = y[tr], y[va]
         gva = groups[va]
@@ -117,9 +142,10 @@ def main():
         nd = ndcg_at_k(y_true=yva, y_score=s, groups=gva, k=TARGET_K)
         p5 = precision_at_k(y_true=yva, y_score=s, groups=gva, k=TARGET_K)
         r5 = recall_at_k(y_true=yva, y_score=s, groups=gva, k=TARGET_K)
-        mrrv = mrr(y_true=yva, y_score=s, groups=gva)                        
+        mrrv = mrr(y_true=yva, y_score=s, groups=gva)
         ndcgs.append(nd)
 
+        # binárias de referência
         try:
             rocs.append(roc_auc_score(yva, s))
         except Exception:
@@ -127,22 +153,21 @@ def main():
         preds = (s >= 0.5).astype(int)
         f1s.append(f1_score(yva, preds))
 
-        print(f"[Fold {fold}] NDCG@{TARGET_K}={nd:.4f} P@{TARGET_K}={p5:.4f} R@{TARGET_K}={r5:.4f} MRR={mrrv:.4f} F1@0.5={f1s[-1]:.4f}")
+        # Coleta de cutoff Top-K deste fold (por vaga)
+        df_va = pd.DataFrame({"y": yva, "s": s, "g": gva})
+        for _, grp in df_va.groupby("g", sort=False):
+            grp_sorted = grp.sort_values("s", ascending=False)
+            if len(grp_sorted) == 0:
+                continue
+            idx = min(TARGET_K - 1, len(grp_sorted) - 1)
+            kth_scores.append(float(grp_sorted["s"].iloc[idx]))
+
+        t_fold = time.perf_counter() - t_fold0
+        print(f"[Fold {fold}] NDCG@{TARGET_K}={nd:.4f} P@{TARGET_K}={p5:.4f} R@{TARGET_K}={r5:.4f} MRR={mrrv:.4f} F1@0.5={f1s[-1]:.4f} | tempo={_fmt_secs(t_fold)} (treino={len(tr)} valid={len(va)})")
         valid_folds += 1
 
-    # ---------- coleta de cutoff baseado em Top-K ----------
-    # Para cada vaga no conjunto de validação, pega o score do K-ésimo
-    # candidato e acumula para calibrar um limiar global.
-    df_va = pd.DataFrame({"y": yva, "s": s, "g": gva})
-    if "kth_scores" not in locals():
-        kth_scores = []
-    for _, grp in df_va.groupby("g", sort=False):
-        grp_sorted = grp.sort_values("s", ascending=False)
-        if len(grp_sorted) == 0:
-            continue
-        # pega o score do K-ésimo, ou o último se tiver <K
-        idx = min(TARGET_K - 1, len(grp_sorted) - 1)
-        kth_scores.append(float(grp_sorted["s"].iloc[idx]))
+    t_cv = time.perf_counter() - t_cv0
+    print(f"[TIMER] Validação cruzada: { _fmt_secs(t_cv) } (folds válidos={valid_folds}/{n_splits})")
 
     if valid_folds == 0:
         print("[AVISO] Nenhum fold válido (classe única nos splits). Métricas serão 0.")
@@ -155,11 +180,10 @@ def main():
         }
 
     # Calibração do cutoff orientado a Top-K
-    if "kth_scores" in locals() and len(kth_scores) > 0:
+    if kth_scores:
         threshold_topk = float(np.median(kth_scores))
     else:
         threshold_topk = 0.5  # fallback seguro
-
     print(f"[Cutoff] threshold_topk(median Kth score) = {threshold_topk:.4f}")
 
     print("[Metrics]", json.dumps(metrics, ensure_ascii=False, indent=2))
@@ -167,11 +191,15 @@ def main():
     # =======================
     # Fit final + salvamento
     # =======================
+    t_fit0 = time.perf_counter()
     if len(np.unique(y)) < 2:
         print("[AVISO] Dataset completo com classe única — usando DummyClassifier(most_frequent).")
         pipe.set_params(clf=DummyClassifier(strategy="most_frequent"))
     pipe.fit(X, y)
+    t_fit = time.perf_counter() - t_fit0
+    print(f"[TIMER] Fit final (tudo): { _fmt_secs(t_fit) }")
 
+    t_save0 = time.perf_counter()
     joblib.dump(pipe, MODELS_DIR / "model.joblib")
     (MODELS_DIR / "metadata.json").write_text(json.dumps({
         "features": ["text_concat via TF-IDF (word+char)"],
@@ -182,6 +210,11 @@ def main():
             "threshold_topk": threshold_topk
         }
     }, ensure_ascii=False, indent=2), encoding="utf-8")
+    t_save = time.perf_counter() - t_save0
+    print(f"[TIMER] Persistência de artefatos: { _fmt_secs(t_save) }")
+
+    t_total = time.perf_counter() - t0
+    print(f"[TIMER] Tempo total do pipeline: { _fmt_secs(t_total) } (fim: { _now() })")
 
 
 if __name__ == "__main__":
