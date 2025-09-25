@@ -15,8 +15,10 @@ from ..config.settings import (
 from ..data.loaders import load_applicants, load_jobs, load_prospects
 from ..labeling.targets import map_status_to_label
 from .pipeline import build_pipeline
-from .evaluate import ndcg_at_k
+from .evaluate import ndcg_at_k, precision_at_k, recall_at_k, mrr
 
+# Alvo de workload por vaga: quantos candidatos o recrutador quer ver no topo
+TARGET_K = 5
 
 def make_training_table(app_df: pd.DataFrame, job_df: pd.DataFrame, prs_df: pd.DataFrame) -> pd.DataFrame:
     # Join prospects with applicants and jobs
@@ -111,7 +113,11 @@ def main():
             else:
                 s = pipe.predict(Xva).astype(float)
 
-        nd = ndcg_at_k(y_true=yva, y_score=s, groups=gva, k=5)
+        # Métricas de ranking
+        nd = ndcg_at_k(y_true=yva, y_score=s, groups=gva, k=TARGET_K)
+        p5 = precision_at_k(y_true=yva, y_score=s, groups=gva, k=TARGET_K)
+        r5 = recall_at_k(y_true=yva, y_score=s, groups=gva, k=TARGET_K)
+        mrrv = mrr(y_true=yva, y_score=s, groups=gva)                        
         ndcgs.append(nd)
 
         try:
@@ -121,8 +127,22 @@ def main():
         preds = (s >= 0.5).astype(int)
         f1s.append(f1_score(yva, preds))
 
-        print(f"[Fold {fold}] NDCG@5={nd:.4f} F1={f1s[-1]:.4f}")
+        print(f"[Fold {fold}] NDCG@{TARGET_K}={nd:.4f} P@{TARGET_K}={p5:.4f} R@{TARGET_K}={r5:.4f} MRR={mrrv:.4f} F1@0.5={f1s[-1]:.4f}")
         valid_folds += 1
+
+    # ---------- coleta de cutoff baseado em Top-K ----------
+    # Para cada vaga no conjunto de validação, pega o score do K-ésimo
+    # candidato e acumula para calibrar um limiar global.
+    df_va = pd.DataFrame({"y": yva, "s": s, "g": gva})
+    if "kth_scores" not in locals():
+        kth_scores = []
+    for _, grp in df_va.groupby("g", sort=False):
+        grp_sorted = grp.sort_values("s", ascending=False)
+        if len(grp_sorted) == 0:
+            continue
+        # pega o score do K-ésimo, ou o último se tiver <K
+        idx = min(TARGET_K - 1, len(grp_sorted) - 1)
+        kth_scores.append(float(grp_sorted["s"].iloc[idx]))
 
     if valid_folds == 0:
         print("[AVISO] Nenhum fold válido (classe única nos splits). Métricas serão 0.")
@@ -133,6 +153,15 @@ def main():
             "F1_mean": float(sum(f1s) / len(f1s)) if f1s else 0.0,
             "ROC_AUC_mean": float(sum(rocs) / len(rocs)) if rocs else 0.0,
         }
+
+    # Calibração do cutoff orientado a Top-K
+    if "kth_scores" in locals() and len(kth_scores) > 0:
+        threshold_topk = float(np.median(kth_scores))
+    else:
+        threshold_topk = 0.5  # fallback seguro
+
+    print(f"[Cutoff] threshold_topk(median Kth score) = {threshold_topk:.4f}")
+
     print("[Metrics]", json.dumps(metrics, ensure_ascii=False, indent=2))
 
     # =======================
@@ -148,8 +177,11 @@ def main():
         "features": ["text_concat via TF-IDF (word+char)"],
         "target": "y",
         "metrics": metrics,
+        "ranking": {
+            "target_k": TARGET_K,
+            "threshold_topk": threshold_topk
+        }
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[Saved] {MODELS_DIR / 'model.joblib'}")
 
 
 if __name__ == "__main__":
