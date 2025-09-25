@@ -1,10 +1,12 @@
 
 # ui/app.py
+import os
 import streamlit as st
 import pandas as pd
 import requests, json, csv, io
 
-API = "http://127.0.0.1:8000/rank-candidates"
+API_ROOT = os.getenv("API_URL", "http://127.0.0.1:8000")
+API = f"{API_ROOT.rstrip('/')}/rank-candidates"
 
 st.set_page_config(page_title="Decision Match — Ranking", layout="wide")
 st.title("Decision Match — Ranking de Candidatos por Vaga")
