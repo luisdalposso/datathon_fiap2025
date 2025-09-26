@@ -131,15 +131,19 @@ scripts\train.bat
 - **Missing**: linhas (ou faixas) específicas que ficaram sem execução.
 
 ### Leitura dos números (snapshot atual)
-- **Cobertura total**: **88%** (360 linhas, 42 faltantes).
-- **Destaques positivos**: `src/api/schemas.py`, `src/features/text_clean.py`, `src/labeling/targets.py` e `src/api/metrics.py` com **100%**.
+- **Cobertura total**: **90%** (366 linhas, 37 faltantes) ✅
+- **Destaques positivos**:
+  - `src/api/schemas.py`, `src/features/text_clean.py`, `src/labeling/targets.py` e `src/api/metrics.py` com **100%**.
+  - `src/monitoring/drift_service.py` avançou para **92%** — bom sinal de estabilidade no monitoramento e no fluxo do Evidently.
 - **A melhorar**:
-  - `src/api/main.py` → **88%** (linhas faltantes: `72, 99–109, 115, 121–122, 132–134, 168–170, 223–224`).  
-    *Geralmente ramos específicos (ex.: caminhos alternativos, validações/erros ou trechos de inicialização).*
-  - `src/monitoring/drift_service.py` → **84%** (linhas faltantes: `69, 71–72, 80, 87, 89–90, 112–113, 117–118, 132–137`).  
-    *Normalmente partes ligadas ao fluxo do Evidently/relatórios e branches de exceção.*
+  - `src/api/main.py` → **87%** (linhas faltantes: `72, 102–112, 118, 124–125, 135–137, 171–173, 226–227, 346–348`).  
   - `src/monitoring/logs.py` → **50%** (linhas faltantes: `7–12, 15–18`).  
-    *Cobrir helpers de logging com casos de sucesso e falha.*
+
+
+### 90% de cobertura!
+- **Confiança em produção**: reduz risco de regressões silenciosas, especialmente em endpoints críticos e no pipeline de monitoramento.
+- **Facilidade de evolução**: refactors ficam mais seguros e rápidos, já que os testes “seguram” contratos.
+- **Qualidade contínua**: 90% como **quality gate** no CI ajuda a manter o padrão de entrega ao longo do tempo.
 
 ---
 

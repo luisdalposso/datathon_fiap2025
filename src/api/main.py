@@ -1,7 +1,7 @@
 # src/api/main.py
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import csv
 import json
@@ -90,8 +90,11 @@ def load_model():
             pass
 
     env_k = os.getenv("TARGET_K")
-    if env_k and env_k.isdigit():
-        _target_k = int(env_k)
+    if env_k:
+        try:
+            _target_k = int(env_k)
+        except Exception:
+            pass
 
 
 def _init_monitoring():
@@ -231,7 +234,7 @@ def score(payload: ScoreRequest):
 
 
 @app.post("/score-batch")
-def score_batch(payload: list[ScoreRequest]):
+def score_batch(payload: List[ScoreRequest]):
     """Retorna lista simples de {score, pass_by_threshold, threshold_used}."""
     rows = []
     for p in payload:
@@ -337,3 +340,9 @@ def rank_candidates(payload: RankCandidatesRequest):
 
     items = items_all[:k_target]
     return RankResponse(items=items, used_k=len(items), threshold_used=thr)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=False)
