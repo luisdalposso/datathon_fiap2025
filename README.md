@@ -16,9 +16,6 @@ Sistema de **matching candidato ↔ vaga** com pipeline de ML, **API em FastAPI*
 - **Prometheus** coleta métricas de `api:8000` e `drift:8001`.
 - **Grafana** oferece dashboards provisionados por código (datasource + painel “Decision Match — Observability”).
 
-📸 **Espaço para imagem do monitoramento (Grafana/Drift):**    
-![Grafana Drift](src/imgs/grafana_drift.png)
-
 ---
 
 ## 📂 Estrutura do repositório
