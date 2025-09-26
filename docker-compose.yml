@@ -3,31 +3,80 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+    image: datathon_fiap2025-api
     container_name: dm_api
     ports:
       - "8000:8000"
     environment:
       - THRESHOLD_TOPK=0.5
       - TARGET_K=5
+      - MONITORING_DIR=/monitoring
     volumes:
-      # monta os artefatos do modelo (gerados pelo train.py) como read-only
       - ./models/artifacts:/app/models/artifacts:ro
+      - ./monitoring:/monitoring
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 30s
       timeout: 3s
       retries: 3
+    restart: unless-stopped
 
   ui:
     build:
       context: .
       dockerfile: docker/ui.Dockerfile
+    image: datathon_fiap2025-ui
     container_name: dm_ui
     ports:
       - "8501:8501"
     environment:
-      # dentro da rede do compose, o host "api" resolve para o serviço acima
+      # dentro da rede do Compose, o host "api" resolve para o serviço acima
       - API_URL=http://api:8000
     depends_on:
       api:
         condition: service_healthy
+    restart: unless-stopped
+
+  drift:
+    build:
+      context: .
+      dockerfile: docker/drift.Dockerfile
+    image: datathon_fiap2025-drift
+    container_name: dm_drift
+    environment:
+      - MONITORING_DIR=/monitoring
+    volumes:
+      - ./models/artifacts:/app/models/artifacts:ro
+      - ./monitoring:/monitoring
+    ports:
+      - "8001:8001"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: dm_prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+      - drift
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: dm_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./monitoring/grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped

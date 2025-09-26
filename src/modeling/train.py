@@ -216,6 +216,22 @@ def main():
     t_total = time.perf_counter() - t0
     print(f"[TIMER] Tempo total do pipeline: { _fmt_secs(t_total) } (fim: { _now() })")
 
+# === Salva baseline de features simples p/ drift ===
+ref_features = pd.DataFrame({
+    "cv_len": data["cv_pt"].fillna("").astype(str).str.len(),
+    "job_len": (
+        data["principais_atividades"].fillna("").astype(str) + " " +
+        data["competencias"].fillna("").astype(str) + " " +
+        data["observacoes"].fillna("").astype(str) + " " +
+        data["titulo_vaga"].fillna("").astype(str)
+    ).str.len(),
+    # score não existe no treino; usar placeholder NaN
+    "score": np.nan
+})
+ref_path = MODELS_DIR / "baseline_features.csv"
+ref_features.to_csv(ref_path, index=False)
+print(f"[Baseline] features salvas em: {ref_path}")
+
 
 if __name__ == "__main__":
     main()

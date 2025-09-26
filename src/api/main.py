@@ -1,9 +1,23 @@
 # src/api/main.py
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
+
+import csv
+import json
+import os
+import time
+
+import joblib
+import numpy as np
+import pandas as pd
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.requests import Request
+from starlette.responses import Response as StarletteResponse
+
+from .metrics import REQUESTS, LATENCY
 from .schemas import (
     ScoreRequest,
     ScoreResponse,
@@ -12,20 +26,16 @@ from .schemas import (
     RankItem,
 )
 
-import json
-import os
-from typing import Optional
-import joblib
-import numpy as np
-import pandas as pd
-
-
 # =========================
-# Paths & Globals
+# Paths, Globals & Config
 # =========================
 ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = ROOT / "models" / "artifacts" / "model.joblib"
 META_PATH = ROOT / "models" / "artifacts" / "metadata.json"
+
+# Diretório para logs de monitoramento (montado via Docker)
+MONITORING_DIR = os.getenv("MONITORING_DIR", "/monitoring")
+LOG_FILE = os.path.join(MONITORING_DIR, "requests_log.csv")
 
 _model: Optional[object] = None
 _threshold_topk: float = 0.5
@@ -33,7 +43,7 @@ _target_k: int = 5
 
 
 # =========================
-# Internal helpers
+# Helpers internos
 # =========================
 def _score_df(df: pd.DataFrame) -> np.ndarray:
     """Retorna scores [0,1] para um DataFrame no formato da pipeline."""
@@ -47,7 +57,6 @@ def _score_df(df: pd.DataFrame) -> np.ndarray:
         s = _model.predict_proba(df)[:, 1]
     elif hasattr(last, "decision_function"):
         dfu = _model.decision_function(df)
-        # normaliza para [0,1]
         s = (dfu - dfu.min()) / (dfu.max() - dfu.min() + 1e-9)
     else:
         s = _model.predict(df).astype(float)
@@ -69,7 +78,7 @@ def load_model():
             _threshold_topk = float(rk.get("threshold_topk", _threshold_topk))
             _target_k = int(rk.get("target_k", _target_k))
         except Exception:
-            # Se a metadata estiver inválida, segue com defaults/overrides
+            # metadata inválida: mantém defaults/overrides
             pass
 
     # overrides por env
@@ -85,6 +94,34 @@ def load_model():
         _target_k = int(env_k)
 
 
+def _init_monitoring():
+    """Garante diretório/arquivo de log para drift."""
+    if not MONITORING_DIR:
+        return
+    try:
+        os.makedirs(MONITORING_DIR, exist_ok=True)
+        if not os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["ts", "endpoint", "cv_len", "job_len", "score"])
+    except Exception:
+        # não bloqueia o app se não conseguir criar diretório/arquivo
+        pass
+
+
+def _append_monitor_rows(rows):
+    """Anexa linhas no CSV de monitoramento; falhas são silenciosas."""
+    if not MONITORING_DIR:
+        return
+    try:
+        with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            for r in rows:
+                w.writerow(r)
+    except Exception:
+        pass
+
+
 # =========================
 # App factory (lifespan)
 # =========================
@@ -93,12 +130,11 @@ def _build_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         # Inicialização
         load_model()
+        _init_monitoring()
         yield
-        # Finalização (se necessário): nada por enquanto
+        # Finalização: nada por enquanto
 
-    app = FastAPI(title="Decision Match API", version="0.3.2", lifespan=lifespan)
-
-    # CORS liberado para dev/local
+    app = FastAPI(title="Decision Match API", version="0.3.3", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -109,6 +145,29 @@ def _build_app() -> FastAPI:
 
 
 app = _build_app()
+
+
+# =========================
+# Middleware de métricas
+# =========================
+@app.middleware("http")
+async def metrics_and_access_log(request: Request, call_next):
+    start = time.perf_counter()
+    path = request.url.path
+    method = request.method
+    status_code = 500
+    try:
+        response: StarletteResponse = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        dur = time.perf_counter() - start
+        try:
+            LATENCY.labels(endpoint=path).observe(dur)
+            REQUESTS.labels(endpoint=path, method=method, status=str(status_code)).inc()
+        except Exception:
+            # nunca quebre a requisição por falha de métrica
+            pass
 
 
 # =========================
@@ -136,19 +195,34 @@ def metrics():
 
 @app.post("/score", response_model=ScoreResponse)
 def score(payload: ScoreRequest):
-    Xdf = (
-        pd.DataFrame(
-            {
-                "cv_pt": [payload.cv_pt or ""],
-                "principais_atividades": [payload.principais_atividades or ""],
-                "competencias": [payload.competencias or ""],
-                "observacoes": [payload.observacoes or ""],
-                "titulo_vaga": [payload.titulo_vaga or ""],
-            }
-        )
-        .fillna("")
-    )
+    Xdf = pd.DataFrame(
+        {
+            "cv_pt": [payload.cv_pt or ""],
+            "principais_atividades": [payload.principais_atividades or ""],
+            "competencias": [payload.competencias or ""],
+            "observacoes": [payload.observacoes or ""],
+            "titulo_vaga": [payload.titulo_vaga or ""],
+        }
+    ).fillna("")
     score_val = float(_score_df(Xdf)[0])
+
+    # ===== Log leve para drift (sem PII) =====
+    try:
+        cv_len = len(payload.cv_pt or "")
+        job_len = len(
+            " ".join(
+                [
+                    payload.principais_atividades or "",
+                    payload.competencias or "",
+                    payload.observacoes or "",
+                    payload.titulo_vaga or "",
+                ]
+            )
+        )
+        _append_monitor_rows([[time.time(), "/score", cv_len, job_len, score_val]])
+    except Exception:
+        pass
+
     return ScoreResponse(
         score=score_val,
         pass_by_threshold=score_val >= _threshold_topk,
@@ -170,6 +244,8 @@ def score_batch(payload: list[ScoreRequest]):
                 "titulo_vaga": p.titulo_vaga or "",
             }
         )
+    if not rows:
+        return []
     Xdf = pd.DataFrame(rows).fillna("")
     scores = _score_df(Xdf)
     thr = _threshold_topk
@@ -213,6 +289,28 @@ def rank_candidates(payload: RankCandidatesRequest):
 
     Xdf = pd.DataFrame(rows).fillna("")
     scores = _score_df(Xdf)
+
+    # ===== Log leve para drift (sem PII) — 1 linha por candidato =====
+    try:
+        job_txt = (
+            Xdf["principais_atividades"].astype(str)
+            + " "
+            + Xdf["competencias"].astype(str)
+            + " "
+            + Xdf["observacoes"].astype(str)
+            + " "
+            + Xdf["titulo_vaga"].astype(str)
+        )
+        ts = time.time()
+        to_log = []
+        for i in range(len(Xdf)):
+            cv_len_i = len(str(Xdf.iloc[i]["cv_pt"]))
+            job_len_i = len(str(job_txt.iloc[i]))
+            to_log.append([ts, "/rank-candidates", cv_len_i, job_len_i, float(scores[i])])
+        if to_log:
+            _append_monitor_rows(to_log)
+    except Exception:
+        pass
 
     # ordena por score desc
     order = np.argsort(-scores)
