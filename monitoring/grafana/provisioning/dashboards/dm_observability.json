@@ -1,0 +1,150 @@
+{
+  "id": null,
+  "uid": "dm-observability",
+  "title": "Decision Match  Observability",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "endpoint",
+        "type": "query",
+        "refresh": 2,
+        "query": "label_values(dm_api_requests_total, endpoint)",
+        "datasource": { "type": "prometheus", "uid": "PROM" },
+        "current": { "selected": false, "text": "All", "value": ".*" },
+        "includeAll": true,
+        "multi": true
+      },
+      {
+        "name": "feature",
+        "type": "query",
+        "refresh": 2,
+        "query": "label_values(dm_drift_p_value, feature)",
+        "datasource": { "type": "prometheus", "uid": "PROM" },
+        "current": { "selected": false, "text": "All", "value": ".*" },
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Requests/s por endpoint",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "fieldConfig": { "defaults": { "unit": "req/s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        { "expr": "sum by (endpoint) (rate(dm_api_requests_total[5m]))", "legendFormat": "{{endpoint}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests/s  filtro $endpoint",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "fieldConfig": { "defaults": { "unit": "req/s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "sum by (endpoint) (rate(dm_api_requests_total{endpoint=~\"$endpoint\"}[5m]))", "legendFormat": "{{endpoint}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Error rate (%)",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green" }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "100 * sum(rate(dm_api_requests_total{status=~\"4..|5..\"}[5m])) / sum(rate(dm_api_requests_total[5m]))" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latência p95 (s) por endpoint",
+      "gridPos": { "h": 6, "w": 12, "x": 6, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green" }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 2 }
+          ]}
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(dm_api_latency_seconds_bucket[5m])))", "legendFormat": "{{endpoint}}" }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Requests/s por status",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "fieldConfig": { "defaults": { "unit": "req/s" } },
+      "options": { "displayMode": "gradient" },
+      "targets": [
+        { "expr": "sum by (status) (rate(dm_api_requests_total[5m]))", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Drift p-value  $feature",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": 0.05 }, { "color": "green", "value": 0.051 }
+          ]}
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "dm_drift_p_value{feature=~\"$feature\"}", "legendFormat": "{{feature}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Drift detectado (0/1)  $feature",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": 0 }, { "color": "red", "value": 1 }
+          ]}
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "max(dm_drift_detected{feature=~\"$feature\"})", "legendFormat": "max flag" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "p-value (último) por feature",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "PROM" },
+      "options": { "showHeader": true },
+      "targets": [{ "expr": "dm_drift_p_value", "legendFormat": "{{feature}}" }],
+      "transformations": [
+        { "id": "seriesToColumns", "options": { "byField": "Time" } },
+        { "id": "reduce", "options": { "reducers": ["lastNotNull"] } }
+      ]
+    }
+  ]
+}
