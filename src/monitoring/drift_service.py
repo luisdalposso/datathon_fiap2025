@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, Response
-from prometheus_client import Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import (
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+)
+# estes coletores adicionam python_info/process/gc ao registry customizado
+from prometheus_client import ProcessCollector, PlatformCollector, GCCollector
 
 # ---- Paths/Config ----
 MON_DIR = Path(os.getenv("MONITORING_DIR", "/monitoring"))
@@ -14,13 +21,24 @@ ARTIFACTS = Path("/app/models/artifacts")
 BASELINE = ARTIFACTS / "baseline_features.csv"
 LOG_FILE = MON_DIR / "requests_log.csv"
 
-# >>> gravar relatórios no diretório de monitoramento (RW), não em artifacts (RO)
+# Relatórios em diretório de monitoramento (RW), não em artifacts (RO)
 REPORTS_DIR = Path(os.getenv("DRIFT_REPORTS_DIR", str(MON_DIR / "drift_reports")))
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---- Prometheus Gauges ----
-DRIFT_PVAL = Gauge("dm_drift_p_value", "Drift p-value por feature", ["feature"])
-DRIFT_FLAG = Gauge("dm_drift_detected", "1 se drift detectado na feature", ["feature"])
+# ---- Prometheus: registry próprio p/ evitar duplicações em testes ----
+DRIFT_REGISTRY = CollectorRegistry()
+# adiciona métricas padrão (python_info, process, gc) ao registry customizado
+ProcessCollector(registry=DRIFT_REGISTRY)
+PlatformCollector(registry=DRIFT_REGISTRY)
+GCCollector(registry=DRIFT_REGISTRY)
+
+# Métricas do drift (registradas no registry customizado)
+DRIFT_PVAL = Gauge(
+    "dm_drift_p_value", "Drift p-value por feature", ["feature"], registry=DRIFT_REGISTRY
+)
+DRIFT_FLAG = Gauge(
+    "dm_drift_detected", "1 se drift detectado na feature", ["feature"], registry=DRIFT_REGISTRY
+)
 
 # ---- App ----
 app = FastAPI(title="Drift Monitor", version="0.1")
@@ -36,9 +54,10 @@ def health():
 
 @app.get("/metrics")
 def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    # expõe SOMENTE o registry do drift (evita colisão com global)
+    return Response(generate_latest(DRIFT_REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
-# ---- IO helpers (leves) ----
+# ---- IO helpers ----
 def _load_baseline():
     if not BASELINE.exists():
         return None
@@ -85,9 +104,14 @@ def compute_and_export():
         common = ["cv_len", "job_len", "score"]
         report.run(reference_data=ref[common].copy(), current_data=cur[common].copy())
 
-        # salva HTML em /monitoring/drift_reports
+        # salva HTML (best-effort)
         ts = int(time.time())
         out_html = REPORTS_DIR / f"drift_{ts}.html"
+        try:
+            REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
         try:
             report.save_html(str(out_html))
         except Exception:
@@ -121,5 +145,5 @@ def start_bg_loop():
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
 
-# inicia loop em background; /metrics é servido pelo uvicorn:8001
+# inicia loop em background; /metrics usa DRIFT_REGISTRY
 start_bg_loop()

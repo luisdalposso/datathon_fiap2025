@@ -2,7 +2,6 @@
 
 Sistema de **matching candidato ↔ vaga** com pipeline de ML, **API em FastAPI**, **UI em Streamlit** e **observabilidade** (Prometheus + Grafana + Drift/Evidently). Projeto pronto para desenvolvimento local (Windows 11) e para execução via **Docker Compose**.
 
-> 💡 **Dica:** este README foi preparado para ser usado como documento de entrega do projeto. Incluí espaços para **imagens** (Grafana/Drift e UI de upload) — basta colocar os arquivos em `scr/imgs/`.
 
 ---
 
@@ -17,10 +16,8 @@ Sistema de **matching candidato ↔ vaga** com pipeline de ML, **API em FastAPI*
 - **Prometheus** coleta métricas de `api:8000` e `drift:8001`.
 - **Grafana** oferece dashboards provisionados por código (datasource + painel “Decision Match — Observability”).
 
-📸 **Espaço para imagem do monitoramento (Grafana/Drift):**  
-> Coloque sua imagem em `scr/imgs/grafana_drift.png` e ela aparecerá aqui:
-  
-![Grafana Drift](scr/imgs/grafana_drift.png)
+📸 **Espaço para imagem do monitoramento (Grafana/Drift):**    
+![Grafana Drift](src/imgs/grafana_drift.png)
 
 ---
 
@@ -84,19 +81,65 @@ Gera artefatos em `models/artifacts/` e **baseline** para drift (`baseline_featu
 scripts\train.bat
 ```
 
-Ao final, são exibidas métricas de validação cruzada (ex.: **NDCG@5**, **F1_mean**, **ROC_AUC_mean**) e é definido um `threshold_topk` (utilizado pela API).
+![Resultado do Treinamento](src/imgs/result_train.png)
+
+### Visão geral
+- **Base consolidada para treino:** 42.542 pares vaga↔candidato (14.081 vagas únicas).
+- **Validação:** 3 folds com separação por vaga (garante que uma vaga não aparece ao mesmo tempo em treino e validação).
+- **Tempo total de CV:** ~21 min (folds de ~6–8 min).
+
+### Métricas principais (médias na validação)
+
+#### NDCG@5 = 0,772
+- **O que é:** mede a qualidade da ordem do ranking nos 5 primeiros (1,0 seria ordem perfeita).
+- **Interpretação:** o modelo coloca os candidatos relevantes bem no topo. Para uso prático, significa que os primeiros resultados já são, na maioria, os mais úteis.
+
+#### F1_mean (threshold 0,5) = 0,186
+- **O que é:** média harmônica de precisão e recall depois de transformar o score em “aprovado/reprovado” usando corte 0,5.
+- **Interpretação:** como nosso objetivo é ranquear, não classificar duro, o F1 aqui é secundário. Em bases desbalanceadas (poucos “positivos”), o F1 com corte fixo tende a ser baixo — isso é esperado e não contradiz um bom ranking.
+
+#### ROC_AUC_mean = 0,658
+- **O que é:** probabilidade do modelo dar score maior a um candidato relevante do que a um não relevante (0,5 = aleatório; 1,0 = perfeito).
+- **Interpretação:** o modelo está acima do aleatório com margem razoável, mas ainda com espaço para evoluir. Mesmo assim, combinado com NDCG alto, já entrega boa utilidade prática para priorização.
+
+### Métricas de apoio (por fold)
+- **Precision@5 ≈ 0,118** → em média, ~0,6 candidato relevante nos 5 primeiros (0,118 × 5).
+- **Recall@5 ≈ 0,88–0,90** → os 5 primeiros capturam ~88–90% dos relevantes de cada vaga.
+- **MRR ≈ 0,75** → o primeiro relevante costuma aparecer na posição ~1,3 (quase sempre entre 1º e 2º do ranking).
+- **Tradução para operação:** o recrutador tende a encontrar um candidato “bom” logo no topo, e dificilmente precisará descer além do Top-5 para ver o que importa.
+
+### Cutoff de produção
+- **threshold_topk (mediana do 5º score por vaga) = 0,1845.**
+- **Para que serve:** usado pela API quando “Aplicar threshold” está ligado. Ajuda a controlar o tamanho da lista devolvida por vaga mantendo foco em qualidade.
+- **Ajuste fino:** se quiser “ver mais nomes”, reduza o threshold; se quiser “ver só o creme do creme”, aumente. (Também dá para mudar o K.)
+
+### Conclusão
+- O modelo já está útil para priorização: coloca relevantes no topo (NDCG alto, MRR alto) e o Top-5 captura a grande maioria dos casos importantes (Recall@5 alto).
+- O AUC indica uma distinção global consistente entre perfis bons e ruins, ainda com espaço para ganhos incrementais (mais sinais/engenharia de atributos, calibração de scores, etc.).
+- O threshold calibrado deixa a API pronta para operar com listas objetivas, ajustáveis à necessidade do time (mais curtas ou mais amplas).
 
 ---
 
-## 🧪 Testes e cobertura
+## 🧪 Testes & Cobertura
 
-Executa **pytest** + **pytest-cov** e valida o mapeamento de targets e limpeza de texto, além de integrar a API.
+![Cobertura de testes](src/imgs/tests_coverage.png)
 
-```bat
-scripts\test.bat
-```
+### O que a tabela mostra
+- **Stmts**: total de linhas executáveis detectadas pelo `coverage.py`.
+- **Miss**: linhas **não** exercitadas pelos testes.
+- **Cover**: porcentagem de cobertura por arquivo.
+- **Missing**: linhas (ou faixas) específicas que ficaram sem execução.
 
-Exemplo de cobertura obtida no projeto: **96%** (com `src/api/main.py` chegando a ~94%).
+### Leitura dos números (snapshot atual)
+- **Cobertura total**: **88%** (360 linhas, 42 faltantes).
+- **Destaques positivos**: `src/api/schemas.py`, `src/features/text_clean.py`, `src/labeling/targets.py` e `src/api/metrics.py` com **100%**.
+- **A melhorar**:
+  - `src/api/main.py` → **88%** (linhas faltantes: `72, 99–109, 115, 121–122, 132–134, 168–170, 223–224`).  
+    *Geralmente ramos específicos (ex.: caminhos alternativos, validações/erros ou trechos de inicialização).*
+  - `src/monitoring/drift_service.py` → **84%** (linhas faltantes: `69, 71–72, 80, 87, 89–90, 112–113, 117–118, 132–137`).  
+    *Normalmente partes ligadas ao fluxo do Evidently/relatórios e branches de exceção.*
+  - `src/monitoring/logs.py` → **50%** (linhas faltantes: `7–12, 15–18`).  
+    *Cobrir helpers de logging com casos de sucesso e falha.*
 
 ---
 
@@ -111,10 +154,9 @@ scripts\serve.bat
 :: streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0
 ```
 
-📸 **Espaço para imagem da UI (upload no Streamlit):**  
-> Coloque sua imagem em `scr/imgs/streamlit_upload.png` e ela aparecerá aqui:
+📸 **Upload da base de vagas Streamlit):**  
 
-![Streamlit Upload](scr/imgs/streamlit_upload.png)
+![Streamlit Upload](src/imgs/streamlit_upload.png)
 
 ---
 
@@ -177,22 +219,6 @@ docker compose ps
      - **Métricas**: `dm_drift_p_value{feature}`, `dm_drift_detected{feature}`.
      - **Relatório HTML**: `monitoring/drift_reports/drift_<timestamp>.html`.
 
-> Para ver dados no painel, gere tráfego (UI ou `POST /score`) e aguarde ~1–2 min.
-
-### Popular rapidamente (PowerShell)
-```powershell
-for ($i=0; $i -lt 250; $i++) {
-  $body = @{
-    cv_pt="Dev Python com FastAPI e Docker $i"
-    titulo_vaga="Backend Python"
-    principais_atividades="APIs REST"
-    competencias="Python; FastAPI; Docker; SQL"
-    observacoes=""
-  } | ConvertTo-Json
-  Invoke-RestMethod -Method POST -Uri http://localhost:8000/score -Body $body -ContentType "application/json" | Out-Null
-}
-```
-
 ---
 
 ## ⚙️ Provisionamento automático do Grafana (as‑code)
@@ -246,4 +272,4 @@ docker compose logs -f grafana
 
 ## 📄 Licença
 
-Projeto acadêmico/educacional. Ajuste a licença conforme política da equipe/organização.
+Projeto acadêmico/educacional.
